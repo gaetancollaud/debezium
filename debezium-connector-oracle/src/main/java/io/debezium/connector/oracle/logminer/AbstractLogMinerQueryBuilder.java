@@ -233,7 +233,7 @@ public abstract class AbstractLogMinerQueryBuilder implements LogMinerQueryBuild
         }
         else if (LogMiningQueryFilterMode.IN.equals(queryFilterMode)) {
             final boolean caseInsensitive = connectorConfig.isLogMiningQueryFilterCaseInsensitive();
-            final boolean tableNameOnly = connectorConfig.isLogMiningQueryFilterTableNameOnly();
+            final boolean tableNameWithSchema = connectorConfig.isLogMiningQueryFilterTableNameWithSchema();
             final List<String> includeTableList = getTableIncludeExcludeListAsInValueList(includeList);
             final List<String> excludeTableList = getTableIncludeExcludeListAsInValueList(excludeList);
             final StringBuilder predicate = new StringBuilder();
@@ -250,20 +250,20 @@ public abstract class AbstractLogMinerQueryBuilder implements LogMinerQueryBuild
 
             getSignalDataCollectionId(connectorConfig).ifPresent(signalTableId -> {
                 if (!tableIncludeListContains(includeTableList, signalTableId)) {
-                    predicate.append(getSignalTablePredicate(signalTableId, caseInsensitive, tableNameOnly)).append(" OR ");
+                    predicate.append(getSignalTablePredicate(signalTableId, caseInsensitive, tableNameWithSchema)).append(" OR ");
                 }
             });
 
             final IncludeExcludeInClause inClause = IncludeExcludeInClause.builder().withFilterMode(queryFilterMode);
-            if (tableNameOnly) {
-                inClause.withField("TABLE_NAME")
-                        .withIncludeValues(toTableNames(includeTableList))
-                        .withExcludeValues(toTableNames(excludeTableList));
-            }
-            else {
+            if (tableNameWithSchema) {
                 inClause.withField(fieldName)
                         .withIncludeValues(includeTableList)
                         .withExcludeValues(excludeTableList);
+            }
+            else {
+                inClause.withField("TABLE_NAME")
+                        .withIncludeValues(toTableNames(includeTableList))
+                        .withExcludeValues(toTableNames(excludeTableList));
             }
             if (caseInsensitive) {
                 inClause.caseInsensitive();
@@ -289,7 +289,7 @@ public abstract class AbstractLogMinerQueryBuilder implements LogMinerQueryBuild
 
             getSignalDataCollectionId(connectorConfig).ifPresent(signalTableId -> {
                 if (!matches(includeTableList, signalTableId.identifier())) {
-                    predicate.append(getSignalTablePredicate(signalTableId, true, false)).append(" OR ");
+                    predicate.append(getSignalTablePredicate(signalTableId, true, true)).append(" OR ");
                 }
             });
 
@@ -395,13 +395,14 @@ public abstract class AbstractLogMinerQueryBuilder implements LogMinerQueryBuild
         return Optional.empty();
     }
 
-    private static String getSignalTablePredicate(TableId signalTableId, boolean caseInsensitive, boolean tableNameOnly) {
+    private static String getSignalTablePredicate(TableId signalTableId, boolean caseInsensitive, boolean tableNameWithSchema) {
         final String schema = caseInsensitive ? signalTableId.schema().toUpperCase() : signalTableId.schema();
         final String table = caseInsensitive ? signalTableId.table().toUpperCase() : signalTableId.table();
-        if (tableNameOnly) {
-            return column("TABLE_NAME", caseInsensitive) + " = '" + table + "'";
-        }else {
+        if (tableNameWithSchema) {
             return column("SEG_OWNER || '.' || TABLE_NAME", caseInsensitive) + " = '" + schema + "." + table + "'";
+        }
+        else {
+            return column("TABLE_NAME", caseInsensitive) + " = '" + table + "'";
         }
     }
 
