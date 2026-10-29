@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -578,6 +579,28 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     "in - The query uses SQL in-clause expressions to specify the schema or table filters." + System.lineSeparator() +
                     "regex - The query uses Oracle REGEXP_LIKE expressions to specify the schema or table filters." + System.lineSeparator());
 
+    public static final Field LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE = Field.create("log.mining.query.filter.case.insensitive")
+            .withDisplayName("Compare schema and table names case-insensitively in the LogMiner query")
+            .withType(Type.BOOLEAN)
+            .withWidth(Width.SHORT)
+            .withDefault(true)
+            .withImportance(Importance.LOW)
+            .withDescription("When enabled with the 'in' query filter mode, SEG_OWNER and TABLE_NAME are compared using UPPER(). "
+                    + "When disabled, UPPER() is not applied and values must match the case stored in the data dictionary.");
+
+    public static final Field LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY = Field.create("log.mining.query.filter.table.name.only")
+            .withDisplayName("Match tables on the table name only in the LogMiner query")
+            .withType(Type.BOOLEAN)
+            .withWidth(Width.SHORT)
+            .withDefault(false)
+            .withImportance(Importance.LOW)
+            .withValidation(OracleConnectorConfig::validateLogMiningQueryFilterTableNameOnly)
+            .withDescription("When enabled with the 'in' query filter mode, tables are matched on TABLE_NAME "
+                    + "instead of SEG_OWNER || '.' || TABLE_NAME. "
+                    + "WARNING: only enable this when the table include or exclude list references a single schema. "
+                    + "With multiple schemas, same-named tables in different schemas cannot be distinguished, so the query "
+                    + "returns extra rows with an include list and silently skips changes with an exclude list.");
+
     public static final Field LOG_MINING_FLUSH_TABLE_NAME = Field.create("log.mining.flush.table.name")
             .withDisplayName("Specifies the name of the flush table used by the connector")
             .withType(Type.STRING)
@@ -842,7 +865,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     LOG_MINING_BUFFER_TRANSACTION_EVENTS_THRESHOLD, LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS,
                     LOG_MINING_LOG_QUERY_MAX_RETRIES, LOG_MINING_LOG_BACKOFF_INITIAL_DELAY_MS,
                     LOG_MINING_LOG_BACKOFF_MAX_DELAY_MS, LOG_MINING_SESSION_MAX_MS, LOG_MINING_WINDOW_MAX_MS, LOG_MINING_TRANSACTION_SNAPSHOT_BOUNDARY_MODE,
-                    LOG_MINING_READ_ONLY, LOG_MINING_FLUSH_TABLE_NAME, LOG_MINING_QUERY_FILTER_MODE, LOG_MINING_RESTART_CONNECTION, LOG_MINING_MAX_SCN_DEVIATION_MS,
+                    LOG_MINING_READ_ONLY, LOG_MINING_FLUSH_TABLE_NAME, LOG_MINING_QUERY_FILTER_MODE, LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE,
+                    LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, LOG_MINING_RESTART_CONNECTION, LOG_MINING_MAX_SCN_DEVIATION_MS,
                     LOG_MINING_SCHEMA_CHANGES_USERNAME_EXCLUDE_LIST, LOG_MINING_INCLUDE_REDO_SQL, OLR_SOURCE, OLR_HOST, OLR_PORT,
                     LOG_MINING_BUFFER_EHCACHE_GLOBAL_CONFIG, LOG_MINING_BUFFER_EHCACHE_TRANSACTIONS_CONFIG, LOG_MINING_BUFFER_EHCACHE_PROCESSED_TRANSACTIONS_CONFIG,
                     LOG_MINING_BUFFER_EHCACHE_SCHEMA_CHANGES_CONFIG, LOG_MINING_BUFFER_EHCACHE_EVENTS_CONFIG,
@@ -910,6 +934,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final Boolean logMiningReadOnly;
     private final String logMiningFlushTableName;
     private final LogMiningQueryFilterMode logMiningQueryFilterMode;
+    private final boolean logMiningQueryFilterCaseInsensitive;
+    private final boolean logMiningQueryFilterTableNameOnly;
     private final Boolean logMiningRestartConnection;
     private final Duration logMiningMaxScnDeviation;
     private final String logMiningInifispanGlobalConfiguration;
@@ -994,6 +1020,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         this.logMiningReadOnly = config.getBoolean(LOG_MINING_READ_ONLY);
         this.logMiningFlushTableName = config.getString(LOG_MINING_FLUSH_TABLE_NAME);
         this.logMiningQueryFilterMode = LogMiningQueryFilterMode.parse(config.getString(LOG_MINING_QUERY_FILTER_MODE));
+        this.logMiningQueryFilterCaseInsensitive = config.getBoolean(LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE);
+        this.logMiningQueryFilterTableNameOnly = config.getBoolean(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY);
         this.logMiningRestartConnection = config.getBoolean(LOG_MINING_RESTART_CONNECTION);
         this.logMiningMaxScnDeviation = Duration.ofMillis(config.getLong(LOG_MINING_MAX_SCN_DEVIATION_MS));
         this.logMiningInifispanGlobalConfiguration = config.getString(LOG_MINING_BUFFER_INFINISPAN_CACHE_GLOBAL);
@@ -2018,6 +2046,20 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     }
 
     /**
+     * @return whether the LogMiner query compares schema and table names using {@code UPPER()}.
+     */
+    public boolean isLogMiningQueryFilterCaseInsensitive() {
+        return logMiningQueryFilterCaseInsensitive;
+    }
+
+    /**
+     * @return whether the LogMiner query matches tables on {@code TABLE_NAME} only.
+     */
+    public boolean isLogMiningQueryFilterTableNameOnly() {
+        return logMiningQueryFilterTableNameOnly;
+    }
+
+    /**
      * @return whether the connector should restart the JDBC connection after log switches or maximum session windows.
      */
     public boolean isLogMiningRestartConnection() {
@@ -2310,6 +2352,25 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                 if (!racNodes.isEmpty()) {
                     LOGGER.warn("The property '{}' is set, but is ignored due to using read-only mode.", RAC_NODES.name());
                 }
+            }
+        }
+        return 0;
+    }
+
+    public static int validateLogMiningQueryFilterTableNameOnly(Configuration config, Field field, ValidationOutput problems) {
+        if (isLogMiner(config) && config.getBoolean(field)
+                && LogMiningQueryFilterMode.IN.equals(LogMiningQueryFilterMode.parse(config.getString(LOG_MINING_QUERY_FILTER_MODE)))) {
+            final Set<String> schemas = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            for (Field tableList : List.of(TABLE_INCLUDE_LIST, TABLE_EXCLUDE_LIST)) {
+                for (String value : Strings.listOfTrimmed(config.getString(tableList), s -> s.split("[,]"), v -> v.replaceAll("\\\\", ""))) {
+                    schemas.add(String.valueOf(TableId.parse(value, false).schema()));
+                }
+            }
+            if (schemas.size() > 1) {
+                LOGGER.warn("The '{}' option is enabled, but the table filters reference multiple schemas {}. "
+                        + "Same-named tables in different schemas cannot be distinguished, so the LogMiner query may "
+                        + "return extra rows with an include list or skip changes with an exclude list.",
+                        field.name(), schemas);
             }
         }
         return 0;

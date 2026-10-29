@@ -4769,6 +4769,30 @@ The schema, table, and username configuration include/exclude lists should not s
 `regex`:: The query is generated using Oracle's `REGEXP_LIKE` operator to filter schema and table names on the database side, along with usernames using a SQL in-clause.
 The schema and table configuration include/exclude lists can safely specify regular expressions.
 
+|[[oracle-property-log-mining-query-filter-case-insensitive]]<<oracle-property-log-mining-query-filter-case-insensitive, `+log.mining.query.filter.case.insensitive+`>>
+|`true`
+|Specifies whether the LogMiner query compares schema and table names case-insensitively when xref:oracle-property-log-mining-query-filter-mode[`log.mining.query.filter.mode`] is set to `in`.
+
+`true`:: The query wraps the `SEG_OWNER` and `TABLE_NAME` columns in `UPPER()` and compares them to the uppercased include/exclude list values.
+
+`false`:: The query compares the columns directly, without `UPPER()`.
+Specify the schema and table names in the include/exclude lists in the same case that Oracle stores them in the data dictionary, which is uppercase for unquoted identifiers.
+On databases with a large number of captured tables, avoiding `UPPER()` can reduce the cost of the LogMiner query.
+
+|[[oracle-property-log-mining-query-filter-table-name-only]]<<oracle-property-log-mining-query-filter-table-name-only, `+log.mining.query.filter.table.name.only+`>>
+|`false`
+|Specifies whether the LogMiner query matches the table include/exclude list on the table name only when xref:oracle-property-log-mining-query-filter-mode[`log.mining.query.filter.mode`] is set to `in`.
+
+`false`:: The query matches the schema-qualified name `SEG_OWNER \|\| '.' \|\| TABLE_NAME`.
+
+`true`:: The query matches only the `TABLE_NAME` column, which avoids the string concatenation.
+
+WARNING: Enable this option only when the table include or exclude list references a single schema.
+If the lists reference multiple schemas, tables with the same name in different schemas cannot be distinguished.
+With an include list, the query returns additional rows that the connector filters afterwards.
+With an exclude list, changes to the same-named tables in other schemas are skipped.
+The connector logs a warning at startup when this option is enabled and the table filters reference multiple schemas.
+
 |[[oracle-property-log-mining-log-count-min]]<<oracle-property-log-mining-log-count-min, `+log.mining.log.count.min+`>>
 |`2`
 |The minimum number of transaction logs to read per redo thread in each mining step.

@@ -9,7 +9,9 @@ import static io.debezium.config.CommonConnectorConfig.SIGNAL_DATA_COLLECTION;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOB_ENABLED;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_BUFFER_TYPE;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_INCLUDE_INTERNAL_EVENTS;
+import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_QUERY_FILTER_MODE;
+import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_USERNAME_EXCLUDE_LIST;
 import static io.debezium.connector.oracle.OracleConnectorConfig.LOG_MINING_USERNAME_INCLUDE_LIST;
 import static io.debezium.connector.oracle.OracleConnectorConfig.PDB_NAME;
@@ -43,6 +45,7 @@ import io.debezium.connector.oracle.junit.SkipWhenAdapterNameIsNot;
 import io.debezium.connector.oracle.logminer.buffered.BufferedLogMinerQueryBuilder;
 import io.debezium.connector.oracle.util.TestHelper;
 import io.debezium.doc.FixFor;
+import io.debezium.junit.logging.LogInterceptor;
 import io.debezium.relational.TableId;
 import io.debezium.util.Strings;
 
@@ -185,6 +188,78 @@ public class LogMinerQueryBuilderTest {
             assertThat(new BufferedLogMinerQueryBuilder(onlineCatalog).getQuery()).doesNotContain(unresolvedObjectClause);
             assertQuery(onlineCatalog);
         }
+    }
+
+    @Test
+    @FixFor("debezium/dbz#2949")
+    public void testInFilterCaseInsensitiveAndTableNameOnlyToggles() {
+        final String tables = "DEBEZIUM\\.T1,OTHER\\.T1,DEBEZIUM\\.t2";
+        final String signalTable = TestHelper.getDatabaseName() + ".DEBEZIUM1.SIGNAL_TABLE";
+
+        // Defaults keep the legacy case-insensitive, schema-qualified predicate
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN).with(TABLE_INCLUDE_LIST, tables)))
+                .contains("UPPER(SEG_OWNER || '.' || TABLE_NAME) IN ('DEBEZIUM.T1','OTHER.T1','DEBEZIUM.T2')");
+
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN).with(TABLE_INCLUDE_LIST, tables)
+                .with(LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE, "false")))
+                .contains("SEG_OWNER || '.' || TABLE_NAME IN ('DEBEZIUM.T1','OTHER.T1','DEBEZIUM.t2')")
+                .doesNotContain("UPPER(SEG_OWNER");
+
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN).with(TABLE_INCLUDE_LIST, tables)
+                .with(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, "true")))
+                .contains("UPPER(TABLE_NAME) IN ('T1','T2')")
+                .doesNotContain("SEG_OWNER || '.' || TABLE_NAME");
+
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN)
+                .with(SCHEMA_INCLUDE_LIST, "DEBEZIUM")
+                .with(TABLE_INCLUDE_LIST, tables)
+                .with(SIGNAL_DATA_COLLECTION, signalTable)
+                .with(LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE, "false")
+                .with(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, "true")))
+                .contains("(SEG_OWNER IS NULL OR SEG_OWNER IN ('UNKNOWN','DEBEZIUM'))")
+                .contains("TABLE_NAME = 'SIGNAL_TABLE' OR TABLE_NAME IN ('T1','t2'))")
+                .doesNotContain("UPPER(SEG_OWNER")
+                .doesNotContain("UPPER(TABLE_NAME")
+                .doesNotContain("SEG_OWNER || '.' || TABLE_NAME");
+
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN).with(TABLE_EXCLUDE_LIST, tables)
+                .with(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, "true")))
+                .contains("UPPER(TABLE_NAME) NOT IN ('T1','T2')")
+                .doesNotContain("SEG_OWNER || '.' || TABLE_NAME");
+
+        assertThat(getQuery(getBuilderForMode(LogMiningQueryFilterMode.IN).with(TABLE_EXCLUDE_LIST, tables)
+                .with(LOG_MINING_QUERY_FILTER_CASE_INSENSITIVE, "false")
+                .with(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, "true")))
+                .contains("TABLE_NAME NOT IN ('T1','t2')")
+                .doesNotContain("UPPER(TABLE_NAME")
+                .doesNotContain("SEG_OWNER || '.' || TABLE_NAME");
+    }
+
+    @Test
+    @FixFor("debezium/dbz#2949")
+    public void testTableNameOnlyWarnsWhenTableFiltersReferenceMultipleSchemas() {
+        final LogInterceptor logInterceptor = new LogInterceptor(OracleConnectorConfig.class);
+        final String warning = "the table filters reference multiple schemas";
+
+        assertThat(validateTableNameOnly(TABLE_INCLUDE_LIST, "DEBEZIUM\\.T1,DEBEZIUM\\.T2")).isTrue();
+        assertThat(logInterceptor.containsWarnMessage(warning)).isFalse();
+
+        assertThat(validateTableNameOnly(TABLE_EXCLUDE_LIST, "DEBEZIUM\\.T1,OTHER\\.T1")).isTrue();
+        assertThat(logInterceptor.containsWarnMessage(warning)).isTrue();
+    }
+
+    private boolean validateTableNameOnly(Field tableList, String tables) {
+        return TestHelper.defaultConfig()
+                .with(LOG_MINING_QUERY_FILTER_MODE, LogMiningQueryFilterMode.IN.getValue())
+                .with(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY, true)
+                .with(tableList, tables)
+                .build()
+                .validateAndRecord(List.of(LOG_MINING_QUERY_FILTER_TABLE_NAME_ONLY), problem -> {
+                });
+    }
+
+    private String getQuery(ConfigBuilder builder) {
+        return new BufferedLogMinerQueryBuilder(builder.build()).getQuery();
     }
 
     private ConfigBuilder getBuilderForStrategy(LogMiningQueryFilterMode mode, LogMiningStrategy strategy) {
